@@ -8,6 +8,7 @@ import itertools
 import logging
 import math
 import mimetypes
+import unicodedata
 import os
 import re
 import urlparse
@@ -24,10 +25,11 @@ try:
     import slugify as slugify_lib
 except ImportError:
     slugify_lib = None
-    import unicodedata
 
 import openerp
 from openerp.osv import orm, osv, fields
+from openerp.tools import html_escape as escape
+from openerp.tools import ustr as ustr
 from openerp.tools.safe_eval import safe_eval
 from openerp.addons.web.http import request
 
@@ -96,20 +98,18 @@ def slugify(s, max_length=None):
     :param max_length: int
     :rtype: str
     """
-
+    s = ustr(s)
     if slugify_lib:
         # There are 2 different libraries only python-slugify is supported
         try:
             return slugify_lib.slugify(s, max_length=max_length)
         except TypeError:
             pass
-    if isinstance(s, str):
-        s = s.decode('utf-8')
     uni = unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
-    spaceless = re.sub('[\W_]', ' ', uni).strip().lower()
-    specialless = re.sub('[-\s]+', '-', spaceless)
+    slug = re.sub('[\W_]', ' ', uni).strip().lower()
+    slug = re.sub('[-\s]+', '-', slug)
 
-    return specialless[:max_length]
+    return slug[:max_length]
 
 def slug(value):
     if isinstance(value, orm.browse_record):
@@ -727,7 +727,7 @@ class ir_attachment(osv.osv):
         for attachment in self.browse(cr, uid, ids, context=context):
             # in-document URLs are html-escaped, a straight search will not
             # find them
-            url = werkzeug.utils.escape(attachment.website_url)
+            url = escape(attachment.website_url)
             ids = Views.search(cr, uid, ["|", ('arch', 'like', '"%s"' % url), ('arch', 'like', "'%s'" % url)], context=context)
 
             if ids:
@@ -816,3 +816,4 @@ class website_seo_metadata(osv.Model):
     }
 
 # vim:et:
+
