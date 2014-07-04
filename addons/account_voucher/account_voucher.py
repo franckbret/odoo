@@ -27,6 +27,7 @@ import openerp.addons.decimal_precision as dp
 from openerp.tools.translate import _
 from openerp.tools import float_compare
 from openerp.report import report_sxw
+import openerp
 
 class res_currency(osv.osv):
     _inherit = "res.currency"
@@ -333,7 +334,7 @@ class account_voucher(osv.osv):
             ('payment','Payment'),
             ('receipt','Receipt'),
         ],'Default Type', readonly=True, states={'draft':[('readonly',False)]}),
-        'name':fields.char('Memo', size=256, readonly=True, states={'draft':[('readonly',False)]}),
+        'name':fields.char('Memo', readonly=True, states={'draft':[('readonly',False)]}),
         'date':fields.date('Date', readonly=True, select=True, states={'draft':[('readonly',False)]}, help="Effective date for accounting entries"),
         'journal_id':fields.many2one('account.journal', 'Journal', required=True, readonly=True, states={'draft':[('readonly',False)]}),
         'account_id':fields.many2one('account.account', 'Account', required=True, readonly=True, states={'draft':[('readonly',False)]}),
@@ -351,15 +352,15 @@ class account_voucher(osv.osv):
              ('cancel','Cancelled'),
              ('proforma','Pro-forma'),
              ('posted','Posted')
-            ], 'Status', readonly=True, size=32, track_visibility='onchange',
+            ], 'Status', readonly=True, track_visibility='onchange',
             help=' * The \'Draft\' status is used when a user is encoding a new and unconfirmed Voucher. \
                         \n* The \'Pro-forma\' when voucher is in Pro-forma status,voucher does not have an voucher number. \
                         \n* The \'Posted\' status is used when user create voucher,a voucher number is generated and voucher entries are created in account \
                         \n* The \'Cancelled\' status is used when user cancel voucher.'),
         'amount': fields.float('Total', digits_compute=dp.get_precision('Account'), required=True, readonly=True, states={'draft':[('readonly',False)]}),
         'tax_amount':fields.float('Tax Amount', digits_compute=dp.get_precision('Account'), readonly=True, states={'draft':[('readonly',False)]}),
-        'reference': fields.char('Ref #', size=64, readonly=True, states={'draft':[('readonly',False)]}, help="Transaction reference number."),
-        'number': fields.char('Number', size=32, readonly=True,),
+        'reference': fields.char('Ref #', readonly=True, states={'draft':[('readonly',False)]}, help="Transaction reference number."),
+        'number': fields.char('Number', readonly=True,),
         'move_id':fields.many2one('account.move', 'Account Entry'),
         'move_ids': fields.related('move_id','line_id', type='one2many', relation='account.move.line', string='Journal Items', readonly=True),
         'partner_id':fields.many2one('res.partner', 'Partner', change_default=1, readonly=True, states={'draft':[('readonly',False)]}),
@@ -377,7 +378,7 @@ class account_voucher(osv.osv):
                                            ('with_writeoff', 'Reconcile Payment Balance'),
                                            ], 'Payment Difference', required=True, readonly=True, states={'draft': [('readonly', False)]}, help="This field helps you to choose what you want to do with the eventual difference between the paid amount and the sum of allocated amounts. You can either choose to keep open this difference on the partner's account, or reconcile it with the payment(s)"),
         'writeoff_acc_id': fields.many2one('account.account', 'Counterpart Account', readonly=True, states={'draft': [('readonly', False)]}),
-        'comment': fields.char('Counterpart Comment', size=64, required=True, readonly=True, states={'draft': [('readonly', False)]}),
+        'comment': fields.char('Counterpart Comment', required=True, readonly=True, states={'draft': [('readonly', False)]}),
         'analytic_id': fields.many2one('account.analytic.account','Write-Off Analytic Account', readonly=True, states={'draft': [('readonly', False)]}),
         'writeoff_amount': fields.function(_get_writeoff_amount, string='Difference Amount', type='float', readonly=True, help="Computed as the difference between the amount stated in the voucher and the sum of allocation on the voucher lines."),
         'payment_rate_currency_id': fields.many2one('res.currency', 'Payment Rate Currency', required=True, readonly=True, states={'draft':[('readonly',False)]}),
@@ -1096,11 +1097,15 @@ class account_voucher(osv.osv):
         if amount_residual > 0:
             account_id = line.voucher_id.company_id.expense_currency_exchange_account_id
             if not account_id:
-                raise osv.except_osv(_('Insufficient Configuration!'),_("You should configure the 'Loss Exchange Rate Account' in the accounting settings, to manage automatically the booking of accounting entries related to differences between exchange rates."))
+                model, action_id = self.pool['ir.model.data'].get_object_reference(cr, uid, 'account', 'action_account_form')
+                msg = _("You should configure the 'Loss Exchange Rate Account' to manage automatically the booking of accounting entries related to differences between exchange rates.")
+                raise openerp.exceptions.RedirectWarning(msg, action_id, _('Go to the configuration panel'))
         else:
             account_id = line.voucher_id.company_id.income_currency_exchange_account_id
             if not account_id:
-                raise osv.except_osv(_('Insufficient Configuration!'),_("You should configure the 'Gain Exchange Rate Account' in the accounting settings, to manage automatically the booking of accounting entries related to differences between exchange rates."))
+                model, action_id = self.pool['ir.model.data'].get_object_reference(cr, uid, 'account', 'action_account_form')
+                msg = _("You should configure the 'Gain Exchange Rate Account' to manage automatically the booking of accounting entries related to differences between exchange rates.")
+                raise openerp.exceptions.RedirectWarning(msg, action_id, _('Go to the configuration panel'))
         # Even if the amount_currency is never filled, we need to pass the foreign currency because otherwise
         # the receivable/payable account may have a secondary currency, which render this field mandatory
         if line.account_id.currency_id:
@@ -1482,7 +1487,7 @@ class account_voucher_line(osv.osv):
 
     _columns = {
         'voucher_id':fields.many2one('account.voucher', 'Voucher', required=1, ondelete='cascade'),
-        'name':fields.char('Description', size=256),
+        'name':fields.char('Description',),
         'account_id':fields.many2one('account.account','Account', required=True),
         'partner_id':fields.related('voucher_id', 'partner_id', type='many2one', relation='res.partner', string='Partner'),
         'untax_amount':fields.float('Untax Amount'),

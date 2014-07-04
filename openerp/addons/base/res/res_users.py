@@ -19,8 +19,10 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 ##############################################################################
-from functools import partial
+import itertools
 import logging
+from functools import partial
+
 from lxml import etree
 from lxml.builder import E
 
@@ -31,6 +33,7 @@ import openerp.exceptions
 from openerp.osv import fields,osv, expression
 from openerp.osv.orm import browse_record
 from openerp.tools.translate import _
+from openerp.http import request
 
 _logger = logging.getLogger(__name__)
 
@@ -86,7 +89,7 @@ class res_groups(osv.osv):
         return where
 
     _columns = {
-        'name': fields.char('Name', size=64, required=True, translate=True),
+        'name': fields.char('Name', required=True, translate=True),
         'users': fields.many2many('res.users', 'res_groups_users_rel', 'gid', 'uid', 'Users'),
         'model_access': fields.one2many('ir.model.access', 'group_id', 'Access Controls'),
         'rule_groups': fields.many2many('ir.rule', 'rule_group_rel',
@@ -172,7 +175,7 @@ class res_users(osv.osv):
             help="Specify a value only when creating a user or if you're "\
                  "changing the user's password, otherwise leave empty. After "\
                  "a change of password, the user has to login again."),
-        'signature': fields.text('Signature'),
+        'signature': fields.html('Signature'),
         'active': fields.boolean('Active'),
         'action_id': fields.many2one('ir.actions.actions', 'Home Action', help="If specified, this action will be opened at log on for this user, in addition to the standard menu."),
         'groups_id': fields.many2many('res.groups', 'res_groups_users_rel', 'uid', 'gid', 'Groups'),
@@ -492,7 +495,7 @@ class res_users(osv.osv):
     def preference_save(self, cr, uid, ids, context=None):
         return {
             'type': 'ir.actions.client',
-            'tag': 'reload',
+            'tag': 'reload_context',
         }
 
     def preference_change_password(self, cr, uid, ids, context=None):
@@ -547,12 +550,7 @@ class cset(object):
     def __iter__(self):
         return iter(self.elements)
 
-def concat(ls):
-    """ return the concatenation of a list of iterables """
-    res = []
-    for l in ls: res.extend(l)
-    return res
-
+concat = itertools.chain.from_iterable
 
 class groups_implied(osv.osv):
     _inherit = 'res.groups'
@@ -616,7 +614,7 @@ class users_implied(osv.osv):
         if values.get('groups_id'):
             # add implied groups for all users
             for user in self.browse(cr, uid, ids):
-                gs = set(concat([g.trans_implied_ids for g in user.groups_id]))
+                gs = set(concat(g.trans_implied_ids for g in user.groups_id))
                 vals = {'groups_id': [(4, g.id) for g in gs]}
                 super(users_implied, self).write(cr, uid, [user.id], vals, context)
             self.pool['ir.ui.view'].clear_cache()

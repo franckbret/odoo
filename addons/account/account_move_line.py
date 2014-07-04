@@ -31,6 +31,7 @@ from openerp.osv import fields, osv, orm
 from openerp.tools.translate import _
 import openerp.addons.decimal_precision as dp
 from openerp import tools
+import openerp
 
 class account_move_line(osv.osv):
     _name = "account.move.line"
@@ -127,8 +128,8 @@ class account_move_line(osv.osv):
 
             if move_line.reconcile_id:
                 continue
-            if not move_line.account_id.type in ('payable', 'receivable'):
-                #this function does not suport to be used on move lines not related to payable or receivable accounts
+            if not move_line.account_id.reconcile:
+                #this function does not suport to be used on move lines not related to a reconcilable account
                 continue
 
             if move_line.currency_id:
@@ -445,7 +446,7 @@ class account_move_line(osv.osv):
 
 
     _columns = {
-        'name': fields.char('Name', size=64, required=True),
+        'name': fields.char('Name', required=True),
         'quantity': fields.float('Quantity', digits=(16,2), help="The optional quantity expressed by this line, eg: number of product sold. The quantity is not a legal requirement but is very useful for some reports."),
         'product_uom_id': fields.many2one('product.uom', 'Unit of Measure'),
         'product_id': fields.many2one('product.product', 'Product'),
@@ -454,7 +455,7 @@ class account_move_line(osv.osv):
         'account_id': fields.many2one('account.account', 'Account', required=True, ondelete="cascade", domain=[('type','<>','view'), ('type', '<>', 'closed')], select=2),
         'move_id': fields.many2one('account.move', 'Journal Entry', ondelete="cascade", help="The move of this entry line.", select=2, required=True),
         'narration': fields.related('move_id','narration', type='text', relation='account.move', string='Internal Note'),
-        'ref': fields.related('move_id', 'ref', string='Reference', type='char', size=64, store=True),
+        'ref': fields.related('move_id', 'ref', string='Reference', type='char', store=True),
         'statement_id': fields.many2one('account.bank.statement', 'Statement', help="The bank statement used for bank reconciliation", select=1),
         'reconcile_id': fields.many2one('account.move.reconcile', 'Reconcile', readonly=True, ondelete='set null', select=2),
         'reconcile_partial_id': fields.many2one('account.move.reconcile', 'Partial Reconcile', readonly=True, ondelete='set null', select=2),
@@ -548,7 +549,9 @@ class account_move_line(osv.osv):
         if context.get('journal_type', False):
             jids = journal_pool.search(cr, uid, [('type','=', context.get('journal_type'))])
             if not jids:
-                raise osv.except_osv(_('Configuration Error!'), _('Cannot find any account journal of %s type for this company.\n\nYou can create one in the menu: \nConfiguration/Journals/Journals.') % context.get('journal_type'))
+                model, action_id = self.pool['ir.model.data'].get_object_reference(cr, uid, 'account', 'action_account_journal_form')
+                msg = _("""Cannot find any account journal of "%s" type for this company, You should create one.\n Please go to Journal Configuration""") % context.get('journal_type').replace('_', ' ').title()
+                raise openerp.exceptions.RedirectWarning(msg, action_id, _('Go to the configuration panel'))
             journal_id = jids[0]
         return journal_id
 
