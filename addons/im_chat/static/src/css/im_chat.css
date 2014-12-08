@@ -4,6 +4,7 @@
     background-color: #E8EBEF;
     width: 220px;
     border-left: 1px solid #AEB9BD;
+    z-index: 500;
 }
 
 @media print {
@@ -14,7 +15,6 @@
 /* button */
 .oe_systray #oe_topbar_imbutton_icon {
     color: white;
-    margin-right: 10px;
 }
 .oe_topbar_item.oe_topbar_imbutton .oe_e {
     position: relative;
@@ -64,6 +64,8 @@
 
 .oe_im_users {
     padding-bottom: 38px;
+    height: 100%;
+    overflow-y: scroll;
 }
 .oe_im_user {
     position: relative;

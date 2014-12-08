@@ -20,10 +20,10 @@
 ##############################################################################
 
 import crm
-import crm_segmentation
 import crm_lead
 import sales_team
 import calendar_event
+import ir_http
 import crm_phonecall
 import report
 import wizard

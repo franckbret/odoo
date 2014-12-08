@@ -20,8 +20,10 @@
 #
 ##############################################################################
 
+from datetime import datetime
 from openerp.osv import fields, osv
 from openerp.tools.translate import _
+from openerp.tools import DEFAULT_SERVER_DATE_FORMAT, DEFAULT_SERVER_DATETIME_FORMAT
 import openerp.addons.decimal_precision as dp
 
 class purchase_requisition(osv.osv):
@@ -30,7 +32,7 @@ class purchase_requisition(osv.osv):
     _inherit = ['mail.thread', 'ir.needaction_mixin']
 
     def _get_po_line(self, cr, uid, ids, field_names, arg=None, context=None):
-        result = {}.fromkeys(ids, [])
+        result = dict((res_id, []) for res_id in ids)
         for element in self.browse(cr, uid, ids, context=context):
             for po in element.purchase_ids:
                 result[element.id] += [po_line.id for po_line in po.order_line]
@@ -70,7 +72,7 @@ class purchase_requisition(osv.osv):
         'exclusive': 'multiple',
         'company_id': lambda self, cr, uid, c: self.pool.get('res.company')._company_default_get(cr, uid, 'purchase.requisition', context=c),
         'user_id': lambda self, cr, uid, c: self.pool.get('res.users').browse(cr, uid, uid, c).id,
-        'name': lambda obj, cr, uid, context: obj.pool.get('ir.sequence').get(cr, uid, 'purchase.order.requisition'),
+        'name': lambda obj, cr, uid, context: obj.pool.get('ir.sequence').next_by_code(cr, uid, 'purchase.order.requisition'),
         'picking_type_id': _get_picking_in,
     }
 
@@ -113,6 +115,7 @@ class purchase_requisition(osv.osv):
         res['context'] = {
             'search_default_groupby_product': True,
             'search_default_hide_cancelled': True,
+            'tender_id': ids[0],
         }
         res['domain'] = [('id', 'in', [line.id for line in po_lines])]
         return res
@@ -130,27 +133,31 @@ class purchase_requisition(osv.osv):
         return res
 
     def _prepare_purchase_order(self, cr, uid, requisition, supplier, context=None):
-        supplier_pricelist = supplier.property_product_pricelist_purchase and supplier.property_product_pricelist_purchase.id or False
-        picking_type_in = self.pool.get("purchase.order")._get_picking_in(cr, uid, context=context)
+        supplier_pricelist = supplier.property_product_pricelist_purchase
         return {
             'origin': requisition.name,
-            'date_order': requisition.date_end or fields.date.context_today(self, cr, uid, context=context),
+            'date_order': requisition.date_end or fields.datetime.now(),
             'partner_id': supplier.id,
-            'pricelist_id': supplier_pricelist,
-            'location_id': requisition.picking_type_id.default_location_dest_id.id,
+            'pricelist_id': supplier_pricelist.id,
+            'currency_id': supplier_pricelist and supplier_pricelist.currency_id.id or requisition.company_id.currency_id.id,
+            'location_id': requisition.procurement_id and requisition.procurement_id.location_id.id or requisition.picking_type_id.default_location_dest_id.id,
             'company_id': requisition.company_id.id,
             'fiscal_position': supplier.property_account_position and supplier.property_account_position.id or False,
             'requisition_id': requisition.id,
             'notes': requisition.description,
-            'picking_type_id': picking_type_in,
+            'picking_type_id': requisition.picking_type_id.id
         }
 
     def _prepare_purchase_order_line(self, cr, uid, requisition, requisition_line, purchase_id, supplier, context=None):
+        if context is None:
+            context = {}
         po_line_obj = self.pool.get('purchase.order.line')
         product_uom = self.pool.get('product.uom')
         product = requisition_line.product_id
         default_uom_po_id = product.uom_po_id.id
-        date_order = requisition.ordering_date or fields.date.context_today(self, cr, uid, context=context)
+        ctx = context.copy()
+        ctx['tz'] = requisition.user_id.tz
+        date_order = requisition.ordering_date and fields.date.date_to_datetime(self, cr, uid, requisition.ordering_date, context=ctx) or fields.datetime.now()
         qty = product_uom._compute_qty(cr, uid, requisition_line.product_uom_id.id, requisition_line.product_qty, default_uom_po_id)
         supplier_pricelist = supplier.property_product_pricelist_purchase and supplier.property_product_pricelist_purchase.id or False
         vals = po_line_obj.onchange_product_id(
@@ -245,7 +252,7 @@ class purchase_requisition(osv.osv):
             for quotation in tender.purchase_ids:
                 if (self.check_valid_quotation(cr, uid, quotation, context=context)):
                     #use workflow to set PO state to confirm
-                    po.signal_purchase_confirm(cr, uid, [quotation.id])
+                    po.signal_workflow(cr, uid, [quotation.id], 'purchase_confirm')
 
             #get other confirmed lines per supplier
             for po_line in tender.po_line_ids:
@@ -268,13 +275,13 @@ class purchase_requisition(osv.osv):
                     vals = self._prepare_po_line_from_tender(cr, uid, tender, line, new_po, context=context)
                     poline.copy(cr, uid, line.id, default=vals, context=context)
                 #use workflow to set new PO state to confirm
-                po.signal_purchase_confirm(cr, uid, [new_po])
+                po.signal_workflow(cr, uid, [new_po], 'purchase_confirm')
 
             #cancel other orders
             self.cancel_unconfirmed_quotations(cr, uid, tender, context=context)
 
             #set tender to state done
-            self.signal_done(cr, uid, [tender.id])
+            self.signal_workflow(cr, uid, [tender.id], 'done')
         return True
 
     def cancel_unconfirmed_quotations(self, cr, uid, tender, context=None):
@@ -282,7 +289,7 @@ class purchase_requisition(osv.osv):
         po = self.pool.get('purchase.order')
         for quotation in tender.purchase_ids:
             if quotation.state in ['draft', 'sent', 'bid']:
-                self.pool.get('purchase.order').signal_purchase_cancel(cr, uid, [quotation.id])
+                self.pool.get('purchase.order').signal_workflow(cr, uid, [quotation.id], 'purchase_cancel')
                 po.message_post(cr, uid, [quotation.id], body=_('Cancelled by the call for bids associated to this request for quotation.'), context=context)
         return True
 
@@ -398,6 +405,7 @@ class procurement_order(osv.osv):
                 'warehouse_id': warehouse_id and warehouse_id[0] or False,
                 'company_id': procurement.company_id.id,
                 'procurement_id': procurement.id,
+                'picking_type_id': procurement.rule_id.picking_type_id.id,
                 'line_ids': [(0, 0, {
                     'product_id': procurement.product_id.id,
                     'product_uom_id': procurement.product_uom.id,

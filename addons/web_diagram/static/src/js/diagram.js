@@ -24,15 +24,6 @@ instance.web.DiagramView = instance.web.View.extend({
         this.ids = this.dataset.ids;
         this.on('pager_action_executed', self, self.pager_action_trigger);
     },
-    start: function () {
-        return this._super().then(function () {
-            return $.when(
-                openerp.webclient.session.load_js(['/web/js/web_diagram.assets_raphael'])
-            );
-        }).fail(function () {
-            throw new Error("Could not load raphael.js");
-        });
-    },
 
     view_loading: function(r) {
         return this.load_diagram(r);
@@ -225,7 +216,7 @@ instance.web.DiagramView = instance.web.View.extend({
         };
 
         CuteEdge.creation_callback = function(node_start, node_end){
-            return {label:_t("")};
+            return {label: ''};
         };
         CuteEdge.new_edge_callback = function(cuteedge){
             self.add_connector(cuteedge.get_start().id,

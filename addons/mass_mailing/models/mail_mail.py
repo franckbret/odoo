@@ -45,7 +45,7 @@ class MailMail(osv.Model):
         # TDE note: should be after 'all values computed', to have values (FIXME after merging other branch holding create refactoring)
         mail_id = super(MailMail, self).create(cr, uid, values, context=context)
         if values.get('statistics_ids'):
-            mail = self.browse(cr, SUPERUSER_ID, mail_id)
+            mail = self.browse(cr, SUPERUSER_ID, mail_id, context=context)
             for stat in mail.statistics_ids:
                 self.pool['mail.mail.statistics'].write(cr, uid, [stat.id], {'message_id': mail.message_id}, context=context)
         return mail_id
@@ -73,6 +73,11 @@ class MailMail(osv.Model):
     def send_get_mail_body(self, cr, uid, mail, partner=None, context=None):
         """ Override to add the tracking URL to the body. """
         body = super(MailMail, self).send_get_mail_body(cr, uid, mail, partner=partner, context=context)
+
+        # prepend <base> tag for images using absolute urls
+        domain = self.pool.get("ir.config_parameter").get_param(cr, uid, "web.base.url", context=context)
+        base = "<base href='%s'>" % domain
+        body = tools.append_content_to_html(base, body, plaintext=False, container_tag='div')
 
         # generate tracking URL
         if mail.statistics_ids:

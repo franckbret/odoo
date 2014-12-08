@@ -30,6 +30,7 @@ from openerp.tools.translate import _
 import openerp.addons.decimal_precision as dp
 from openerp.osv.orm import browse_record_list, browse_record, browse_null
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT, DEFAULT_SERVER_DATETIME_FORMAT, DATETIME_FORMATS_MAP
+from openerp.tools.float_utils import float_compare
 
 class purchase_order(osv.osv):
 
@@ -149,7 +150,15 @@ class purchase_order(osv.osv):
 
     def _get_picking_in(self, cr, uid, context=None):
         obj_data = self.pool.get('ir.model.data')
-        return obj_data.get_object_reference(cr, uid, 'stock','picking_type_in') and obj_data.get_object_reference(cr, uid, 'stock','picking_type_in')[1] or False
+        type_obj = self.pool.get('stock.picking.type')
+        user_obj = self.pool.get('res.users')
+        company_id = user_obj.browse(cr, uid, uid, context=context).company_id.id
+        types = type_obj.search(cr, uid, [('code', '=', 'incoming'), ('warehouse_id.company_id', '=', company_id)], context=context)
+        if not types:
+            types = type_obj.search(cr, uid, [('code', '=', 'incoming'), ('warehouse_id', '=', False)], context=context)
+            if not types:
+                raise osv.except_osv(_('Error!'), _("Make sure you have at least an incoming picking type defined"))
+        return types[0]
 
     def _get_picking_ids(self, cr, uid, ids, field_names, args, context=None):
         res = {}
@@ -209,9 +218,9 @@ class purchase_order(osv.osv):
                                         "It's mainly used to do the matching when you receive the "
                                         "products as this reference is usually written on the "
                                         "delivery order sent by your supplier."),
-        'date_order':fields.date('Order Date', required=True, states={'confirmed':[('readonly',True)],
+        'date_order':fields.datetime('Order Date', required=True, states={'confirmed':[('readonly',True)],
                                                                       'approved':[('readonly',True)]},
-                                 select=True, help="Date on which this document has been created.",
+                                 select=True, help="Depicts the date where the Quotation should be validated and converted into a Purchase Order, by default it's the creation date.",
                                  copy=False),
         'date_approve':fields.date('Date Approved', readonly=1, select=True, copy=False,
                                    help="Date on which purchase order has been approved"),
@@ -232,7 +241,7 @@ class purchase_order(osv.osv):
                                        "to 'Confirmed'. Then the supplier must confirm the order to change "
                                        "the status to 'Approved'. When the purchase order is paid and "
                                        "received, the status becomes 'Done'. If a cancel action occurs in "
-                                       "the invoice or in the reception of goods, the status becomes "
+                                       "the invoice or in the receipt of goods, the status becomes "
                                        "in exception.",
                                   select=True, copy=False),
         'order_line': fields.one2many('purchase.order.line', 'order_id', 'Order Lines',
@@ -244,7 +253,7 @@ class purchase_order(osv.osv):
         'invoice_ids': fields.many2many('account.invoice', 'purchase_invoice_rel', 'purchase_id',
                                         'invoice_id', 'Invoices', copy=False,
                                         help="Invoices generated for a purchase order"),
-        'picking_ids': fields.function(_get_picking_ids, method=True, type='one2many', relation='stock.picking', string='Picking List', help="This is the list of reception operations that have been generated for this purchase order."),
+        'picking_ids': fields.function(_get_picking_ids, method=True, type='one2many', relation='stock.picking', string='Picking List', help="This is the list of receipts that have been generated for this purchase order."),
         'shipped':fields.boolean('Received', readonly=True, select=True, copy=False,
                                  help="It indicates that a picking has been done"),
         'shipped_rate': fields.function(_shipped_rate, string='Received Ratio', type='float'),
@@ -252,10 +261,10 @@ class purchase_order(osv.osv):
                                     help="It indicates that an invoice has been validated"),
         'invoiced_rate': fields.function(_invoiced_rate, string='Invoiced', type='float'),
         'invoice_method': fields.selection([('manual','Based on Purchase Order lines'),('order','Based on generated draft invoice'),('picking','Based on incoming shipments')], 'Invoicing Control', required=True,
-            readonly=True, states={'draft':[('readonly',False)], 'sent':[('readonly',False)]},
+            readonly=True, states={'draft':[('readonly',False)], 'sent':[('readonly',False)],'bid':[('readonly',False)]},
             help="Based on Purchase Order lines: place individual lines in 'Invoice Control / On Purchase Order lines' from where you can selectively create an invoice.\n" \
                 "Based on generated invoice: create a draft invoice you can validate later.\n" \
-                "Based on incoming shipments: let you create an invoice when receptions are validated."
+                "Based on incoming shipments: let you create an invoice when receipts are validated."
         ),
         'minimum_planned_date':fields.function(_minimum_planned_date, fnct_inv=_set_minimum_planned_date, string='Expected Date', type='date', select=True, help="This is computed as the minimum scheduled date of all purchase order lines' products.",
             store = {
@@ -290,7 +299,7 @@ class purchase_order(osv.osv):
         'invoice_count': fields.function(_count_all, type='integer', string='Invoices', multi=True)
     }
     _defaults = {
-        'date_order': fields.date.context_today,
+        'date_order': fields.datetime.now,
         'state': 'draft',
         'name': lambda obj, cr, uid, context: '/',
         'shipped': 0,
@@ -312,7 +321,7 @@ class purchase_order(osv.osv):
 
     def create(self, cr, uid, vals, context=None):
         if vals.get('name','/')=='/':
-            vals['name'] = self.pool.get('ir.sequence').get(cr, uid, 'purchase.order') or '/'
+            vals['name'] = self.pool.get('ir.sequence').next_by_code(cr, uid, 'purchase.order') or '/'
         context = dict(context or {}, mail_create_nolog=True)
         order =  super(purchase_order, self).create(cr, uid, vals, context=context)
         self.message_post(cr, uid, [order], body=_("RFQ created"), context=context)
@@ -328,7 +337,7 @@ class purchase_order(osv.osv):
                 raise osv.except_osv(_('Invalid Action!'), _('In order to delete a purchase order, you must cancel it first.'))
 
         # automatically sending subflow.delete upon deletion
-        self.signal_purchase_cancel(cr, uid, unlink_ids)
+        self.signal_workflow(cr, uid, unlink_ids, 'purchase_cancel')
 
         return super(purchase_order, self).unlink(cr, uid, unlink_ids, context=context)
 
@@ -519,7 +528,7 @@ class purchase_order(osv.osv):
         This function prints the request for quotation and mark it as sent, so that we can see more easily the next step of the workflow
         '''
         assert len(ids) == 1, 'This option should only be used for a single id at a time'
-        self.signal_send_rfq(cr, uid, ids)
+        self.signal_workflow(cr, uid, ids, 'send_rfq')
         return self.pool['report'].get_action(cr, uid, ids, 'purchase.report_purchasequotation', context=context)
 
     def wkf_confirm_order(self, cr, uid, ids, context=None):
@@ -672,27 +681,27 @@ class purchase_order(osv.osv):
                     return True
         return False
 
+    def wkf_action_cancel(self, cr, uid, ids, context=None):
+        self.write(cr, uid, ids, {'state': 'cancel'}, context=context)
+        self.set_order_line_status(cr, uid, ids, 'cancel', context=context)
+
     def action_cancel(self, cr, uid, ids, context=None):
         for purchase in self.browse(cr, uid, ids, context=context):
             for pick in purchase.picking_ids:
-                if pick.state not in ('draft', 'cancel'):
-                    raise osv.except_osv(
-                        _('Unable to cancel the purchase order %s.') % (purchase.name),
-                        _('First cancel all receptions related to this purchase order.'))
-            self.pool.get('stock.picking') \
-                .signal_button_cancel(cr, uid, map(attrgetter('id'), purchase.picking_ids))
+                for move in pick.move_lines:
+                    if pick.state == 'done':
+                        raise osv.except_osv(
+                            _('Unable to cancel the purchase order %s.') % (purchase.name),
+                            _('You have already received some goods for it.  '))
+            self.pool.get('stock.picking').action_cancel(cr, uid, [x.id for x in purchase.picking_ids if x.state != 'cancel'], context=context)
             for inv in purchase.invoice_ids:
                 if inv and inv.state not in ('cancel', 'draft'):
                     raise osv.except_osv(
                         _('Unable to cancel this purchase order.'),
                         _('You must first cancel all invoices related to this purchase order.'))
             self.pool.get('account.invoice') \
-                .signal_invoice_cancel(cr, uid, map(attrgetter('id'), purchase.invoice_ids))
-            self.pool['purchase.order.line'].write(cr, uid, [l.id for l in  purchase.order_line],
-                    {'state': 'cancel'})
-        self.write(cr, uid, ids, {'state': 'cancel'})
-        self.set_order_line_status(cr, uid, ids, 'cancel', context=context)
-        self.signal_purchase_cancel(cr, uid, ids)
+                .signal_workflow(cr, uid, map(attrgetter('id'), purchase.invoice_ids), 'invoice_cancel')
+        self.signal_workflow(cr, uid, ids, 'purchase_cancel')
         return True
 
     def _prepare_order_line_move(self, cr, uid, order, order_line, picking_id, group_id, context=None):
@@ -700,7 +709,7 @@ class purchase_order(osv.osv):
         product_uom = self.pool.get('product.uom')
         price_unit = order_line.price_unit
         if order_line.product_uom.id != order_line.product_id.uom_id.id:
-            price_unit *= order_line.product_uom.factor
+            price_unit *= order_line.product_uom.factor / order_line.product_id.uom_id.factor
         if order.currency_id.id != order.company_id.currency_id.id:
             #we don't round the price_unit, as we may want to store the standard price with more digits than allowed by the currency
             price_unit = self.pool.get('res.currency').compute(cr, uid, order.currency_id.id, order.company_id.currency_id.id, price_unit, round=False, context=context)
@@ -710,7 +719,7 @@ class purchase_order(osv.osv):
             'product_id': order_line.product_id.id,
             'product_uom': order_line.product_uom.id,
             'product_uos': order_line.product_uom.id,
-            'date': fields.date.date_to_datetime(self, cr, uid, order.date_order, context),
+            'date': order.date_order,
             'date_expected': fields.date.date_to_datetime(self, cr, uid, order_line.date_planned, context),
             'location_id': order.partner_id.property_stock_supplier.id,
             'location_dest_id': order.location_id.id,
@@ -727,7 +736,7 @@ class purchase_order(osv.osv):
             'origin': order.name,
             'route_ids': order.picking_type_id.warehouse_id and [(6, 0, [x.id for x in order.picking_type_id.warehouse_id.route_ids])] or [],
             'warehouse_id':order.picking_type_id.warehouse_id.id,
-            'invoice_state': order.invoice_method == 'picking' and '2binvoiced' or 'none'
+            'invoice_state': order.invoice_method == 'picking' and '2binvoiced' or 'none',
         }
 
         diff_quantity = order_line.product_qty
@@ -740,7 +749,8 @@ class purchase_order(osv.osv):
                 'move_dest_id': procurement.move_dest_id.id,  #move destination is same as procurement destination
                 'group_id': procurement.group_id.id or group_id,  #move group is same as group of procurements if it exists, otherwise take another group
                 'procurement_id': procurement.id,
-                'invoice_state': procurement.rule_id.invoice_state or (procurement.location_id and procurement.location_id.usage == 'customer' and procurement.invoice_state) or (order.invoice_method == 'picking' and '2binvoiced') or 'none', #dropship case takes from sale
+                'invoice_state': procurement.rule_id.invoice_state or (procurement.location_id and procurement.location_id.usage == 'customer' and procurement.invoice_state=='picking' and '2binvoiced') or (order.invoice_method == 'picking' and '2binvoiced') or 'none', #dropship case takes from sale
+                'propagate': procurement.rule_id.propagate,
             })
             diff_quantity -= min(procurement_qty, diff_quantity)
             res.append(tmp)
@@ -818,7 +828,13 @@ class purchase_order(osv.osv):
 
     def action_picking_create(self, cr, uid, ids, context=None):
         for order in self.browse(cr, uid, ids):
-            picking_id = self.pool.get('stock.picking').create(cr, uid, {'picking_type_id': order.picking_type_id.id, 'partner_id': order.dest_address_id.id or order.partner_id.id}, context=context)
+            picking_vals = {
+                'picking_type_id': order.picking_type_id.id,
+                'partner_id': order.dest_address_id.id or order.partner_id.id,
+                'date': max([l.date_planned for l in order.order_line]),
+                'origin': order.name
+            }
+            picking_id = self.pool.get('stock.picking').create(cr, uid, picking_vals, context=context)
             self._create_stock_moves(cr, uid, order, order.order_line, picking_id, context=context)
 
     def picking_done(self, cr, uid, ids, context=None):
@@ -933,7 +949,7 @@ class purchase_order(osv.osv):
             # make triggers pointing to the old orders point to the new order
             for old_id in old_ids:
                 self.redirect_workflow(cr, uid, [(old_id, neworder_id)])
-                self.signal_purchase_cancel(cr, uid, [old_id])
+                self.signal_workflow(cr, uid, [old_id], 'purchase_cancel')
 
         return orders_info
 
@@ -980,8 +996,8 @@ class purchase_order_line(osv.osv):
                                           'order_line_id', 'invoice_id', 'Invoice Lines',
                                           readonly=True, copy=False),
         'invoiced': fields.boolean('Invoiced', readonly=True, copy=False),
-        'partner_id': fields.related('order_id','partner_id',string='Partner',readonly=True,type="many2one", relation="res.partner", store=True),
-        'date_order': fields.related('order_id','date_order',string='Order Date',readonly=True,type="date"),
+        'partner_id': fields.related('order_id', 'partner_id', string='Partner', readonly=True, type="many2one", relation="res.partner", store=True),
+        'date_order': fields.related('order_id', 'date_order', string='Order Date', readonly=True, type="datetime"),
         'procurement_ids': fields.one2many('procurement.order', 'purchase_line_id', string='Associated procurements'),
     }
     _defaults = {
@@ -1026,13 +1042,13 @@ class purchase_order_line(osv.osv):
 
            :param browse_record | False supplier_info: product.supplierinfo, used to
                determine delivery delay (if False, default delay = 0)
-           :param str date_order_str: date of order, as a string in
-               DEFAULT_SERVER_DATE_FORMAT
+           :param str date_order_str: date of order field, as a string in
+               DEFAULT_SERVER_DATETIME_FORMAT
            :rtype: datetime
            :return: desired Schedule Date for the PO line
         """
         supplier_delay = int(supplier_info.delay) if supplier_info else 0
-        return datetime.strptime(date_order_str, DEFAULT_SERVER_DATE_FORMAT) + relativedelta(days=supplier_delay)
+        return datetime.strptime(date_order_str, DEFAULT_SERVER_DATETIME_FORMAT) + relativedelta(days=supplier_delay)
 
     def action_cancel(self, cr, uid, ids, context=None):
         self.write(cr, uid, ids, {'state': 'cancel'}, context=context)
@@ -1101,17 +1117,18 @@ class purchase_order_line(osv.osv):
 
         # - determine product_qty and date_planned based on seller info
         if not date_order:
-            date_order = fields.date.context_today(self,cr,uid,context=context)
+            date_order = fields.datetime.now()
 
 
         supplierinfo = False
+        precision = self.pool.get('decimal.precision').precision_get(cr, uid, 'Product Unit of Measure')
         for supplier in product.seller_ids:
             if partner_id and (supplier.name.id == partner_id):
                 supplierinfo = supplier
                 if supplierinfo.product_uom.id != uom_id:
                     res['warning'] = {'title': _('Warning!'), 'message': _('The selected supplier only sells this product by %s') % supplierinfo.product_uom.name }
                 min_qty = product_uom._compute_qty(cr, uid, supplierinfo.product_uom.id, supplierinfo.min_qty, to_uom_id=uom_id)
-                if (qty or 0.0) < min_qty: # If the supplier quantity is greater than entered from user, set minimal.
+                if float_compare(min_qty , qty, precision_digits=precision) == 1: # If the supplier quantity is greater than entered from user, set minimal.
                     if qty:
                         res['warning'] = {'title': _('Warning!'), 'message': _('The selected supplier has a minimal quantity set to %s %s, you should not purchase less.') % (supplierinfo.min_qty, supplierinfo.product_uom.name)}
                     qty = min_qty
@@ -1122,11 +1139,12 @@ class purchase_order_line(osv.osv):
             res['value'].update({'product_qty': qty})
 
         price = price_unit
-        if state not in ('sent','bid'):
+        if price_unit is False or price_unit is None:
             # - determine price_unit and taxes_id
             if pricelist_id:
+                date_order_str = datetime.strptime(date_order, DEFAULT_SERVER_DATETIME_FORMAT).strftime(DEFAULT_SERVER_DATE_FORMAT)
                 price = product_pricelist.price_get(cr, uid, [pricelist_id],
-                        product.id, qty or 1.0, partner_id or False, {'uom': uom_id, 'date': date_order})[pricelist_id]
+                        product.id, qty or 1.0, partner_id or False, {'uom': uom_id, 'date': date_order_str})[pricelist_id]
             else:
                 price = product.standard_price
 
@@ -1143,6 +1161,7 @@ class purchase_order_line(osv.osv):
     def action_confirm(self, cr, uid, ids, context=None):
         self.write(cr, uid, ids, {'state': 'confirmed'}, context=context)
         return True
+
 
 class procurement_rule(osv.osv):
     _inherit = 'procurement.rule'
@@ -1275,7 +1294,7 @@ class procurement_order(osv.osv):
         product = prod_obj.browse(cr, uid, procurement.product_id.id, context=new_context)
         taxes_ids = procurement.product_id.supplier_taxes_id
         taxes = acc_pos_obj.map_tax(cr, uid, partner.property_account_position, taxes_ids)
-        name = product.partner_ref
+        name = product.display_name
         if product.description_purchase:
             name += '\n' + product.description_purchase
 
@@ -1320,8 +1339,8 @@ class procurement_order(osv.osv):
                     po_id = available_draft_po_ids[0]
                     po_rec = po_obj.browse(cr, uid, po_id, context=context)
                     #if the product has to be ordered earlier those in the existing PO, we replace the purchase date on the order to avoid ordering it too late
-                    if datetime.strptime(po_rec.date_order, DEFAULT_SERVER_DATE_FORMAT) > purchase_date:
-                        po_obj.write(cr, uid, [po_id], {'date_order': purchase_date}, context=context)
+                    if datetime.strptime(po_rec.date_order, DEFAULT_SERVER_DATETIME_FORMAT) > purchase_date:
+                        po_obj.write(cr, uid, [po_id], {'date_order': purchase_date.strftime(DEFAULT_SERVER_DATETIME_FORMAT)}, context=context)
                     #look for any other PO line in the selected PO with same product and UoM to sum quantities instead of creating a new po line
                     available_po_line_ids = po_line_obj.search(cr, uid, [('order_id', '=', po_id), ('product_id', '=', line_vals['product_id']), ('product_uom', '=', line_vals['product_uom'])], context=context)
                     if available_po_line_ids:
@@ -1334,7 +1353,7 @@ class procurement_order(osv.osv):
                         po_line_id = po_line_obj.create(cr, SUPERUSER_ID, line_vals, context=context)
                         linked_po_ids.append(procurement.id)
                 else:
-                    name = seq_obj.get(cr, uid, 'purchase.order') or _('PO: %s') % procurement.name
+                    name = seq_obj.next_by_code(cr, uid, 'purchase.order') or _('PO: %s') % procurement.name
                     po_vals = {
                         'name': name,
                         'origin': procurement.origin,
@@ -1342,6 +1361,7 @@ class procurement_order(osv.osv):
                         'location_id': procurement.location_id.id,
                         'picking_type_id': procurement.rule_id.picking_type_id.id,
                         'pricelist_id': partner.property_product_pricelist_purchase.id,
+                        'currency_id': partner.property_product_pricelist_purchase and partner.property_product_pricelist_purchase.currency_id.id or procurement.company_id.currency_id.id,
                         'date_order': purchase_date.strftime(DEFAULT_SERVER_DATETIME_FORMAT),
                         'company_id': procurement.company_id.id,
                         'fiscal_position': partner.property_account_position and partner.property_account_position.id or False,
@@ -1370,7 +1390,7 @@ class mail_mail(osv.Model):
         if mail_sent and mail.model == 'purchase.order':
             obj = self.pool.get('purchase.order').browse(cr, uid, mail.res_id, context=context)
             if obj.state == 'draft':
-                self.pool.get('purchase.order').signal_send_rfq(cr, uid, [mail.res_id])
+                self.pool.get('purchase.order').signal_workflow(cr, uid, [mail.res_id], 'send_rfq')
         return super(mail_mail, self)._postprocess_sent_message(cr, uid, mail=mail, context=context, mail_sent=mail_sent)
 
 
@@ -1390,14 +1410,22 @@ class product_template(osv.Model):
         for template in self.browse(cr, uid, ids, context=context):
             res[template.id] = sum([p.purchase_count for p in template.product_variant_ids])
         return res
+
     _columns = {
         'purchase_ok': fields.boolean('Can be Purchased', help="Specify if the product can be selected in a purchase order line."),
         'purchase_count': fields.function(_purchase_count, string='# Purchases', type='integer'),
     }
+
     _defaults = {
         'purchase_ok': 1,
         'route_ids': _get_buy_route,
     }
+
+    def action_view_purchases(self, cr, uid, ids, context=None):
+        products = self._get_products(cr, uid, ids, context=context)
+        result = self._get_act_window_dict(cr, uid, 'purchase.action_purchase_line_product_tree', context=context)
+        result['domain'] = "[('product_id','in',[" + ','.join(map(str, products)) + "])]"
+        return result
 
 class product_product(osv.Model):
     _name = 'product.product'
@@ -1423,13 +1451,13 @@ class mail_compose_message(osv.Model):
         context = context or {}
         if context.get('default_model') == 'purchase.order' and context.get('default_res_id'):
             context = dict(context, mail_post_autofollow=True)
-            self.pool.get('purchase.order').signal_send_rfq(cr, uid, [context['default_res_id']])
+            self.pool.get('purchase.order').signal_workflow(cr, uid, [context['default_res_id']], 'send_rfq')
         return super(mail_compose_message, self).send_mail(cr, uid, ids, context=context)
 
 
 class account_invoice(osv.Model):
     """ Override account_invoice to add Chatter messages on the related purchase
-        orders, logging the invoice reception or payment. """
+        orders, logging the invoice receipt or payment. """
     _inherit = 'account.invoice'
 
     def invoice_validate(self, cr, uid, ids, context=None):
@@ -1473,10 +1501,6 @@ class account_invoice_line(osv.Model):
             'Purchase Order Line', ondelete='set null', select=True,
             readonly=True),
     }
-
-class product_template(osv.osv):
-    _inherit = "product.template"
-
 
 
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:

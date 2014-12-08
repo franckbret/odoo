@@ -86,7 +86,7 @@
                     }
                 });
             }
-            $.getJSON("http://suggest.hp.af.cm/suggest/"+encodeURIComponent(this.root + " "), addSuggestions);
+            $.getJSON("/website/seo_suggest/" + encodeURIComponent(this.root + " "), addSuggestions);
         },
     });
 
@@ -441,7 +441,7 @@
         },
         getMainObject: function () {
             var repr = $('html').data('main-object');
-            var m = repr.match(/.+\((.+), (\d+)\)/);
+            var m = repr.match(/(.+)\((\d+),(.*)\)/);
             if (!m) {
                 return null;
             } else {

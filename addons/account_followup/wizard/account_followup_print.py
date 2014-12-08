@@ -42,6 +42,14 @@ class account_followup_stat_by_partner(osv.osv):
         'company_id': fields.many2one('res.company', 'Company', readonly=True),
     }
 
+    _depends = {
+        'account.move.line': [
+            'account_id', 'company_id', 'credit', 'date', 'debit',
+            'followup_date', 'followup_line_id', 'partner_id', 'reconcile_id',
+        ],
+        'account.account': ['active', 'type'],
+    }
+
     def init(self, cr):
         tools.drop_view_if_exists(cr, 'account_followup_stat_by_partner')
         # Here we don't have other choice but to create a virtual ID based on the concatenation
@@ -160,7 +168,7 @@ class account_followup_print(osv.osv_memory):
             if partner.max_followup_id.send_letter:
                 partner_ids_to_print.append(partner.id)
                 nbprints += 1
-                message = _("Follow-up letter of ") + "<I> " + partner.partner_id.latest_followup_level_id_without_lit.name + "</I>" + _(" will be sent")
+                message = "%s<I> %s </I>%s" % (_("Follow-up letter of "), partner.partner_id.latest_followup_level_id_without_lit.name, _(" will be sent"))
                 partner_obj.message_post(cr, uid, [partner.partner_id.id], body=message, context=context)
         if nbunknownmails == 0:
             resulttext += str(nbmails) + _(" email(s) sent")
